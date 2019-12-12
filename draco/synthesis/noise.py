@@ -84,6 +84,7 @@ class GaussianNoise(task.SingleTask):
     ndays = config.Property(proptype=float, default=733.0)
     seed = config.Property(proptype=int, default=None)
     set_weights = config.Property(proptype=bool, default=True)
+    set_weights_only = config.Property(proptype=bool, default=False)
 
     def setup(self, manager=None):
         """Set the telescope instance if a manager object is given.
@@ -152,15 +153,16 @@ class GaussianNoise(task.SingleTask):
                 (nfreq, nprod, ntime)
             )
 
-        # Iterate over the products to find the auto-correlations and add the noise into them
-        for pi, prod in enumerate(data.index_map["prod"]):
+        if not self.set_weights_only:
+            # Iterate over the products to find the auto-correlations and add the noise into them
+            for pi, prod in enumerate(data.index_map["prod"]):
 
-            # Auto: multiply by sqrt(2) because auto has twice the variance
-            if prod[0] == prod[1]:
-                visdata[:, pi].real += np.sqrt(2) * noise[:, pi].real
+                # Auto: multiply by sqrt(2) because auto has twice the variance
+                if prod[0] == prod[1]:
+                    visdata[:, pi].real += np.sqrt(2) * noise[:, pi].real
 
-            else:
-                visdata[:, pi] += noise[:, pi]
+                else:
+                    visdata[:, pi] += noise[:, pi]
 
         # Construct and set the correct weights in place
         if self.set_weights:
