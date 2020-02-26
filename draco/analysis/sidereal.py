@@ -257,6 +257,16 @@ class SiderealStacker(task.SingleTask):
 
     stack = None
     lsd_list = None
+    
+    weight = config.enum(["uniform", "inverse_variance"], default="uniform")
+    
+    def setup(self):
+        """Initialise internal variables."""
+        
+        self.stack = None
+        self.variance = None
+        self.pseudo_variance = None
+        self.norm = None
 
     def process(self, sdata):
         """Stack up sidereal days.
@@ -284,11 +294,26 @@ class SiderealStacker(task.SingleTask):
         if self.stack is None:
 
             self.stack = containers.empty_like(sdata)
+            
+            self.stack.add_dataset("observed_variance")
+            self.stack.add_dataset("number_of_days")
             self.stack.redistribute("freq")
+            
+            flag = (sdata.weight[:] > 0.0).astype(np.int)
+            if self.weight == "inverse_variance":
+                coeff = sdata.weight[:]
+            else:
+                coeff = flag.astype(np.float32)
 
-            self.stack.vis[:] = sdata.vis[:] * sdata.weight[:]
-            self.stack.weight[:] = sdata.weight[:]
-
+            self.stack.vis[:] = coeff * sdata.vis[:]
+            self.stack.weight[:] = (coeff ** 2) * tools.invert_no_zero(sdata.weight[:])
+            
+            self.stack.number_of_days[:] = flag.astype(np.int)
+            
+            self.variance = coeff * np.abs(sdata.vis[:]) ** 2
+            self.pseudo_variance = coeff * sdata.vis[:] ** 2
+            self.norm = coeff
+            
             self.lsd_list = input_lsd
 
             self.log.info("Starting stack with LSD:%i", sdata.attrs["lsd"])
@@ -298,11 +323,23 @@ class SiderealStacker(task.SingleTask):
         self.log.info("Adding LSD:%i to stack", sdata.attrs["lsd"])
 
         # note: Eventually we should fix up gains
-
+        
+        flag = (sdata.weight[:] > 0.0).astype(np.int)
+        if self.weight == "inverse_variance":
+            coeff = sdata.weight[:]
+        else:
+            coeff = flag.astype(np.float32)
+        
         # Combine stacks with inverse `noise' weighting
-        self.stack.vis[:] += sdata.vis[:] * sdata.weight[:]
-        self.stack.weight[:] += sdata.weight[:]
-
+        self.stack.vis[:] += coeff * sdata.vis[:]
+        self.stack.weight[:] += (coeff ** 2) * tools.invert_no_zero(sdata.weight[:])
+        
+        self.stack.number_of_days[:] += flag
+        
+        self.variance += coeff * np.abs(sdata.vis[:]) ** 2
+        self.pseudo_variance += coeff * sdata.vis[:] ** 2
+        self.norm += coeff
+        
         self.lsd_list += input_lsd
 
     def process_finish(self):
@@ -313,14 +350,24 @@ class SiderealStacker(task.SingleTask):
         stack : containers.SiderealStream
             Stack of sidereal days.
         """
-
         self.stack.attrs["tag"] = "stack"
         self.stack.attrs["lsd"] = np.array(self.lsd_list)
 
-        self.stack.vis[:] *= tools.invert_no_zero(self.stack.weight[:])
+        # Divide by norm to get average 
+        inv_norm = tools.invert_no_zero(self.norm)
+        self.stack.vis[:] *= inv_norm
+        self.stack.weight[:] = (tools.invert_no_zero(self.stack.weight[:]) * self.norm ** 2)
+
+        self.variance = self.variance * inv_norm - np.abs(self.stack.vis[:]) ** 2
+        self.pseudo_variance = self.pseudo_variance * inv_norm - self.stack.vis[:] ** 2
+
+        # Calculate the covariance between real and imaginary component
+        # from the accumulated variance and pseudo-variance
+        self.stack.observed_variance[0] = 0.5 * (self.variance + self.pseudo_variance.real)
+        self.stack.observed_variance[1] = 0.5 * self.pseudo_variance.imag
+        self.stack.observed_variance[2] = 0.5 * (self.variance - self.pseudo_variance.real)
 
         return self.stack
-
 
 def _ensure_list(x):
 

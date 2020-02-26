@@ -657,7 +657,7 @@ class SiderealStream(VisContainer):
         The number of points to divide the RA axis up into.
     """
 
-    _axes = ("ra",)
+    _axes = ("components", "ra",)
 
     _dataset_spec = {
         "vis": {
@@ -680,6 +680,23 @@ class SiderealStream(VisContainer):
             "compression_opts": (0, bitshuffle.h5.H5_COMPRESS_LZ4),
             "chunks": (64, 256, 128),
         },
+        "observed_variance": {
+            "axes": ["components", "freq", "stack", "ra"],
+            "dtype": np.float32,
+            "initialise": False,
+            "distributed": True,
+            "distributed_axis": "freq",
+            "compression": bitshuffle.h5.H5FILTER,
+            "compression_opts": (0, bitshuffle.h5.H5_COMPRESS_LZ4),
+            "chunks": (3, 64, 256, 128),
+        },
+        "number_of_days": {
+            "axes": ["freq", "stack", "ra"],
+            "dtype": np.int64,
+            "initialise": False,
+            "distributed": True,
+            "distributed_axis": "freq",
+        },
         "input_flags": {
             "axes": ["input", "ra"],
             "dtype": np.float32,
@@ -697,7 +714,9 @@ class SiderealStream(VisContainer):
 
     def __init__(self, ra=None, *args, **kwargs):
 
-        # Set up axes passed ra langth
+        kwargs["components"] = np.array(["rr", "ri", "ii"])
+
+        # Set up axes passed ra length
         if ra is not None:
             if isinstance(ra, int):
                 ra = np.linspace(0.0, 360.0, ra, endpoint=False)
@@ -710,12 +729,24 @@ class SiderealStream(VisContainer):
         return self.datasets["gain"]
 
     @property
+    def observed_variance(self):
+        return self.datasets["observed_variance"]
+
+    @property
+    def number_of_days(self):
+        return self.datasets["number_of_days"]
+
+    @property
     def input_flags(self):
         return self.datasets["input_flags"]
 
     @property
     def ra(self):
         return self.index_map["ra"]
+    
+    @property
+    def components(self):
+        return self.index_map["components"]
 
 
 class SystemSensitivity(TODContainer):
