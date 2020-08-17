@@ -112,8 +112,7 @@ class GaussianNoiseDataset(task.SingleTask):
             )
             vis[:] = noise[0] + 1j * noise[1]
 
-        for si, prod in enumerate(data.prodstack):
-            prod_inputs = data.prod[prod]
+        for si, prod_inputs in enumerate(data.prodstack):
             if prod_inputs[0] == prod_inputs[1]:
                 # This is an auto-correlation
                 vis[:, si].real *= 2 ** 0.5
