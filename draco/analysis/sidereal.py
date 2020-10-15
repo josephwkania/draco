@@ -262,26 +262,26 @@ class SiderealRegridder(Regridder):
 
     def _get_phase(self, freq, prod, lsd):
 
+        # Determine if any baselines contains masked feeds
+        # These baselines will be flagged since they do not
+        # have valid baseline distances.
         aa, bb = prod["input_a"], prod["input_b"]
-
-        do_conj = self.observer.feedconj[(aa, bb)]
-        aa[do_conj], bb[do_conj] = bb[do_conj], aa[do_conj]
 
         mask = self.observer.feedmask[(aa, bb)].astype(np.float32)[
             np.newaxis, :, np.newaxis
         ]
 
+        # Calculate the fringe rate assuming that ha = 0.0 and dec = lat
         lmbda = units.c / (freq * 1e6)
-        ew_baseline = (
-            self.observer.feedpositions[aa, 0] - self.observer.feedpositions[bb, 0]
-        )
-        u = ew_baseline[np.newaxis, :] / lmbda[:, np.newaxis]
+        u = self.observer.baselines[np.newaxis, :, 0] / lmbda[:, np.newaxis]
 
-        # Fringe rate assuming that ha = 0.0 and dec = lat
         omega = -2.0 * np.pi * u * np.cos(np.radians(self.observer.latitude))
 
+        # Calculate the local sidereal angle
         dphi = 2.0 * np.pi * (lsd - np.floor(lsd))
 
+        # Construct a complex sinusoid whose frequency
+        # is equal to each baselines fringe rate
         phase = mask * np.exp(
             -1.0j * omega[:, :, np.newaxis] * dphi[np.newaxis, np.newaxis, :]
         )
