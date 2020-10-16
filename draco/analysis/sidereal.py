@@ -339,12 +339,6 @@ class SiderealRegridderLinear(SiderealRegridder):
         interp_grid = np.arange(0, self.samples, dtype=np.float64) / self.samples
         interp_grid = interp_grid * (self.end - self.start) + self.start
 
-        # Consider the data valid if it has nonzero weight
-        flag = (weight > 0.0).astype(np.float32)
-
-        # Determine the variance from the inverse weight
-        var = tools.invert_no_zero(weight)
-
         # Find the data points that lie on either side of each point in the fixed grid
         index = np.searchsorted(lsd, interp_grid, side="left")
 
@@ -380,18 +374,33 @@ class SiderealRegridderLinear(SiderealRegridder):
         coeff1 = dx2 * norm
         coeff2 = dx1 * norm
 
-        # Require both data points to be valid for the interpolated value to be valid
-        interp_flag = flag[..., ind1] * flag[..., ind2]
+        # Initialize the output arrays
+        shp = vis.shape[:-1] + (self.samples,)
 
-        # Interpolate the visibilities and propagate the weights
-        interp_vis = coeff1 * vis[..., ind1] + coeff2 * vis[..., ind2]
+        interp_vis = np.zeros(shp, dtype=vis.dtype)
+        interp_weight = np.zeros(shp, dtype=weight.dtype)
 
-        interp_weight = (
-            tools.invert_no_zero(
-                coeff1 ** 2 * var[..., ind1] + coeff2 ** 2 * var[..., ind2]
-            )
-            * interp_flag
-        )
+        # Loop over frequencies to reduce memory usage
+        for ff in range(shp[0]):
+
+            fvis = vis[ff]
+            fweight = weight[ff]
+
+            # Consider the data valid if it has nonzero weight
+            fflag = fweight > 0.0
+
+            # Determine the variance from the inverse weight
+            fvar = tools.invert_no_zero(fweight)
+
+            # Require both data points to be valid for the interpolated value to be valid
+            finterp_flag = fflag[:, ind1] & fflag[:, ind2]
+
+            # Interpolate the visibilities and propagate the weights
+            interp_vis[ff] = coeff1 * fvis[:, ind1] + coeff2 * fvis[:, ind2]
+
+            interp_weight[ff] = tools.invert_no_zero(
+                coeff1 ** 2 * fvar[:, ind1] + coeff2 ** 2 * fvar[:, ind2]
+            ) * finterp_flag.astype(np.float32)
 
         # Flag as bad any values that were extrapolated or that used distant points
         interp_weight[..., below] = 0.0
@@ -409,12 +418,6 @@ class SiderealRegridderCubic(SiderealRegridder):
         # Create a regular grid
         interp_grid = np.arange(0, self.samples, dtype=np.float64) / self.samples
         interp_grid = interp_grid * (self.end - self.start) + self.start
-
-        # Consider the data valid if it has nonzero weight
-        flag = (weight > 0.0).astype(np.float32)
-
-        # Determine the variance from the inverse weight
-        var = tools.invert_no_zero(weight)
 
         # Find the data point just after each point on the fixed grid
         index = np.searchsorted(lsd, interp_grid, side="left")
@@ -453,26 +456,40 @@ class SiderealRegridderCubic(SiderealRegridder):
         coeff[3] = u ** 2 * (u - 1)
         coeff *= 0.5
 
-        # Interpolate the visibilities and propagate the weights
-        for kk, (ii, cc) in enumerate(zip(index, coeff)):
+        # Initialize the output arrays
+        shp = vis.shape[:-1] + (self.samples,)
 
-            if not kk:
+        interp_vis = np.zeros(shp, dtype=vis.dtype)
+        interp_weight = np.zeros(shp, dtype=weight.dtype)
 
-                interp_flag = flag[..., ii]
-                interp_vis = cc * vis[..., ii]
-                interp_var = cc ** 2 * var[..., ii]
+        # Loop over frequencies to reduce memory usage
+        for ff in range(shp[0]):
 
-            else:
+            fvis = vis[ff]
+            fweight = weight[ff]
 
-                interp_flag *= flag[..., ii]
-                interp_vis += cc * vis[..., ii]
-                interp_var += cc ** 2 * var[..., ii]
+            # Consider the data valid if it has nonzero weight
+            fflag = fweight > 0.0
 
-        # Invert the accumulated variances to get the weight
-        interp_weight = tools.invert_no_zero(interp_var)
+            # Determine the variance from the inverse weight
+            fvar = tools.invert_no_zero(fweight)
 
-        # Require all data points are valid for the interpolated value to be valid
-        interp_weight *= interp_flag
+            # Interpolate the visibilities and propagate the weights
+            finterp_flag = np.ones(shp[1:], dtype=np.bool)
+            finterp_var = np.zeros(shp[1:], dtype=weight.dtype)
+
+            for ii, cc in zip(index, coeff):
+
+                finterp_flag &= fflag[:, ii]
+                finterp_var += cc ** 2 * fvar[:, ii]
+
+                interp_vis[ff] += cc * fvis[:, ii]
+
+            # Invert the accumulated variances to get the weight
+            # Require all data points are valid for the interpolated value to be valid
+            interp_weight[ff] = tools.invert_no_zero(finterp_var) * finterp_flag.astype(
+                np.float32
+            )
 
         # Flag as bad any values that were extrapolated or that used distant points
         interp_weight[..., below] = 0.0
