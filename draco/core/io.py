@@ -236,6 +236,148 @@ class LoadMaps(task.MPILoggedTask):
         return map_stack
 
 
+class LoadCSVCatalog(task.SingleTask):
+    """Load an WiggleZ-style CSV source catalog.
+
+    Catalogs are given as one, or a list of `File Groups` (see
+    :mod:`draco.core.io`). Catalogs within the same group are combined together
+    before being passed on.
+
+    Attributes
+    ----------
+    catalogs : list or dict
+        A dictionary specifying a file group, or a list of them.
+    z_range : list, optional
+        Select only sources with a redshift within the given range.
+    freq_range : list, optional
+        Select only sources with a 21cm line freq within the given range. Overrides
+        `z_range`.
+    """
+
+    catalogs = config.Property(proptype=_list_of_filegroups)
+    z_range = config.list_type(type_=float, length=2, default=None)
+    freq_range = config.list_type(type_=float, length=2, default=None)
+
+    def process(self):
+        """Load the groups of catalogs from disk, concatenate them and pass them on.
+
+        Returns
+        -------
+        catalog : :class:`containers.SpectroscopicCatalog`
+        """
+
+        from . import containers
+
+        # Exit this task if we have eaten all the file groups
+        if len(self.catalogs) == 0:
+            raise pipeline.PipelineStopIteration
+
+        group = self.catalogs.pop(0)
+
+        # Set the redshift selection
+        if self.freq_range:
+            zl = units.nu21 / self.freq_range[1] - 1
+            zh = units.nu21 / self.freq_range[0] - 1
+            self.z_range = (zl, zh)
+
+        if self.z_range:
+            zl, zh = self.z_range
+            self.log.info(f"Applying redshift selection {zl:.2f} <= z <= {zh:.2f}")
+
+        # Load the data only on rank=0 and then broadcast
+        if self.comm.rank == 0:
+            # Iterate over all the files in the group, load them into a Map
+            # container and add them all together
+            catalog_stack = []
+            # data types to parse
+            dtypes = [
+                "S22",
+                float,
+                float,
+                float,
+                float,
+                int,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                float,
+                "|S17",
+                int,
+                float,
+                float,
+                float,
+                "|S14",
+                str,
+            ]
+            # There sometimes seems to be a 29th column which will
+            # cause the parse to fail
+            usecols = np.arange(0, 28)
+
+            for cfile in group["files"]:
+
+                self.log.debug("Loading file %s", cfile)
+
+                # TODO: read out the weights from the catalogs
+                catalogue = np.genfromtxt(
+                    file,
+                    delimiter=",",
+                    usecols=usecols,
+                    names=True,
+                    dtype=dtypes,
+                )
+                pos = np.array(
+                    [catalogue["RA"], catalogue["Dec"], catalogue["redshift"]]
+                )
+
+                # Apply any redshift selection to the objects
+                if self.z_range:
+                    zsel = (pos[2] >= self.z_range[0]) & (pos[2] <= self.z_range[1])
+                    pos = pos[:, zsel]
+
+                catalog_stack.append(pos)
+
+            # NOTE: this one is tricky, for some reason the concatenate in here
+            # produces a non C contiguous array, so we need to ensure that otherwise
+            # the broadcasting will get very confused
+            catalog_array = np.concatenate(catalog_stack, axis=-1).astype(np.float64)
+            catalog_array = np.ascontiguousarray(catalog_array)
+            num_objects = catalog_array.shape[-1]
+        else:
+            num_objects = None
+            catalog_array = None
+
+        # Broadcast the size of the catalog to all ranks, create the target array and
+        # broadcast into it
+        num_objects = self.comm.bcast(num_objects, root=0)
+        self.log.debug(f"Constructing catalog with {num_objects} objects.")
+
+        if self.comm.rank != 0:
+            catalog_array = np.zeros((3, num_objects), dtype=np.float64)
+        self.comm.Bcast(catalog_array, root=0)
+
+        catalog = containers.SpectroscopicCatalog(object_id=num_objects)
+        catalog["position"]["ra"] = catalog_array[0]
+        catalog["position"]["dec"] = catalog_array[1]
+        catalog["redshift"]["z"] = catalog_array[2]
+        catalog["redshift"]["z_error"] = 0
+
+        # Assign a tag to the stack of maps
+        catalog.attrs["tag"] = group["tag"]
+
+        return catalog
+
+
 class LoadFITSCatalog(task.SingleTask):
     """Load an SDSS-style FITS source catalog.
 
