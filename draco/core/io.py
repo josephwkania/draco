@@ -330,7 +330,7 @@ class LoadCSVCatalog(task.SingleTask):
 
                 # TODO: read out the weights from the catalogs
                 catalogue = np.genfromtxt(
-                    file,
+                    cfile,
                     delimiter=",",
                     usecols=usecols,
                     names=True,
